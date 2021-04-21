@@ -1,0 +1,5 @@
+Host: greentechdbdev.ca3wll1ihwpn.us-east-1.rds.amazonaws.com
+Port: 3306
+userName : root
+password: root1234
+Schema: CUSTOMERHUB
