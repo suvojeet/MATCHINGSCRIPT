@@ -16,6 +16,8 @@ import numpy as np
 import sys
 import vaex as vx
 from functools import lru_cache
+import fuzzymatcher
+
 
 config = configparser.ConfigParser()
 config.read('/Users/suvojeetpal/SpringBootCloud/CustomerDataAccountHub-1/src/main/resources/perweight.ini')
@@ -45,7 +47,12 @@ IDSSN8DIFF=config['PERSON-WEIGHT']['ID|SSN|8EDITDST']
 
 iselect_query="""select concat_ws(":",CCID,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(ssn,''),IFNULL(dob,'')) AS 'MatchingList'
          FROM CUSTOMERHUB.customer WHERE bucket_hash_key between %s and %s;"""
-         
+
+
+iselect_addr="""select ccid,addr.addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,addr.postal_code,addr.country
+         from CUSTOMERHUB.customer cust, CUSTOMERHUB.address addr where addr.cust_id=cust.cust_id and cust.ccid=%s;""";
+       
+       
 def _getDBConnection_():
 
     mydb=mysql.connector.connect(user='root', password='root1234',
@@ -82,7 +89,7 @@ def _matchCustomerId_(reqcustId,dbcustId):
     if reqcustId is not None and dbcustId is not None:
         identScore=0
         idEDist= editdistance.eval(re.sub("[^0-9]", "", reqcustId),re.sub("[^0-9]", "", dbcustId))
-
+        
         if  idEDist == 0 :
             identScore = IDSSNExact
         elif idEDist == 1:
@@ -102,7 +109,7 @@ def _matchCustomerId_(reqcustId,dbcustId):
         elif idEDist == 8:
             identScore = IDSSN8DIFF
         else:
-            identScore = -898
+            identScore = 0
 
         return int(identScore)
 
@@ -144,10 +151,43 @@ def _matchCustomerSuffix_(reqcustSuffix,dbcustSuffix):
         return int(suffixScore)
 
 
-def _matchCustomerAddress_(reqAddress,dbAddress):
+def _matchCustomerAddress_(reqAddress,ccid):
     addressScore=0
+    cutReqAddr=[]
+    tmpccid="111111111111111"
+    cutReqAddr.append((tmpccid+","+reqAddress).split(","))
+    custAllDBAddr=[]
+    mydb = _getDBConnection_()  
+    addressScoreBoast=20
     if reqAddress is not None :
+        for i,addr in enumerate(pd.read_sql(iselect_addr, con=mydb ,params=({ccid}),chunksize=1000)):
+            fulladdr=str(addr['ccid'].iloc[i])+","+str(addr['addr_line_one'].iloc[i])+","+str(addr['addr_line_two'].iloc[i])+","+str(addr['city'].iloc[i])+","+str(addr['postal_code'].iloc[i])+","+str(addr['country'].iloc[i])
+            custAllDBAddr.append(fulladdr.split(","))
+    
+    left_on = ['AddressLineOne', 'City_Name','State','PostalCode','Country']
+    right_on = ['DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry']
+
+    reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne', 'City_Name','State','PostalCode','Country'])
+    dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry'])
+    
+    #print (reqAddress)
+    #print (dbAddress)
+    matched_results = fuzzymatcher.fuzzy_left_join(reqAddress,
+                                                       dbAddress,
+                                                       left_on,
+                                                       right_on,
+                                                       left_id_col='Reqccid',
+                                                       right_id_col='DBccId')
+    
+    addressScore=addressScoreBoast+matched_results.best_match_score.values.item(0)*1000
+    #print(addressScore)
+    
+    if(addressScore > 0):
         return int(addressScore)
+    else:
+        return 0;
+
+
 
 @lru_cache(maxsize=100000)
 def _fetchMatchRecordFromDF_(inputParam1,inputParam2):
@@ -158,30 +198,49 @@ def _fetchMatchRecordFromDF_(inputParam1,inputParam2):
         vaex_df=vx.from_pandas(df=chunk, copy_index=False)
         return vaex_df.MatchingList.values
 
-#df_sales = pd.DataFrame(np.random.randint(low = 13, high = 148, size = 918843, dtype= 'uint8'), columns =['MatchingList'])
-
-def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,inputParam1,inputParam2):
+def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,reqaddress,inputParam1,inputParam2):
 
     custDbList=_fetchMatchRecordFromDF_(inputParam1,inputParam2)
     totalscore=0
- 
+    
     parseDBcustList=[]
     suspectList=[]
+    #if custDbList is null search by ssn an address
+    
     for cust in custDbList:
         parseDBcustList.append(str(cust).split(":"))
 
     for custRec in parseDBcustList:
         totalscore=0
+        ssnscore=0
         totalscore= _matchCustomerName_(firstName,custRec[1])
         totalscore=totalscore +_matchCustomerName_(lastName,custRec[2])
         totalscore=totalscore +_matchCustomerSuffix_(suffix,custRec[3])
-        totalscore=totalscore +_matchCustomerGender_(gender,custRec[4])
+        #print("Person Name")
+        #print(totalscore)
+        isAddrMatchingreq=False;
+        
         if custRec[5] is not None:
-            totalscore=totalscore +_matchCustomerId_(ssn,custRec[5])
+            ssnscore=_matchCustomerId_(ssn,custRec[5])
+            totalscore=totalscore + ssnscore
+            #print(ssnscore)
+            if int(ssnscore) == 0:
+                isAddrMatchingreq=True
         else: 
-            totalscore=totalscore +_matchCustomerAddress_(address,custRec[5])
+            isAddrMatchingreq=True
+            
+        if  isAddrMatchingreq == False and int(ssnscore) < int(IDSSNExact) and int(ssnscore) >= int(IDSSN1DIFF):
+            isAddrMatchingreq=True
+        
         totalscore=totalscore +_matchCustomerDateDOB_(dob,custRec[6])
-
+        totalscore=totalscore +_matchCustomerGender_(gender,custRec[4])
+        
+        
+        #Calculating Address 
+        if(isAddrMatchingreq):
+            print("Going for Address Match")
+            totalscore=totalscore+_matchCustomerAddress_(reqaddress,custRec[0])
+        
         percentileScore=totalscore/100
 
         if percentileScore > int(A1):
@@ -198,12 +257,15 @@ def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,inputParam1,inpu
 
     return suspectList
 
+
+
 def _matchFunction_ (argv):
    
     custDetails=argv
     reqCustList=[]
     reqCustList.append(custDetails.split(':'))
-    suspectList=_compareMatching_(reqCustList[0][0],reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],reqCustList[0][6],reqCustList[0][7])
+    suspectList=_compareMatching_(reqCustList[0][0],reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],
+                                  reqCustList[0][6],reqCustList[0][7],reqCustList[0][8])
 
     return suspectList
 
