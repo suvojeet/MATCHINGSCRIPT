@@ -49,7 +49,7 @@ iselect_query="""select concat_ws(":",CCID,first_name,last_name,IFNULL(suffix,''
          FROM CUSTOMERHUB.customer WHERE bucket_hash_key between %s and %s;"""
 
 
-iselect_addr="""select ccid,addr.addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,addr.postal_code,addr.country
+iselect_addr="""select ccid,Replace(addr.addr_line_one,',',' ') as addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,addr.postal_code,addr.country
          from CUSTOMERHUB.customer cust, CUSTOMERHUB.address addr where addr.cust_id=cust.cust_id and cust.ccid=%s;""";
        
        
@@ -152,44 +152,46 @@ def _matchCustomerSuffix_(reqcustSuffix,dbcustSuffix):
 
 
 def _matchCustomerAddress_(reqAddress,ccid):
+    
     addressScore=0
     cutReqAddr=[]
     tmpccid="111111111111111"
+    left_on = ['AddressLineOne', 'City_Name','State','PostalCode','Country']
+    right_on = ['DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry']
     cutReqAddr.append((tmpccid+","+reqAddress).split(","))
     custAllDBAddr=[]
     mydb = _getDBConnection_()  
     addressScoreBoast=20
+    #ccid=2888087888390197660
     if reqAddress is not None :
-        for i,addr in enumerate(pd.read_sql(iselect_addr, con=mydb ,params=({ccid}),chunksize=1000)):
+        df_Addr=pd.read_sql(iselect_addr, con=mydb ,params=(ccid,),chunksize=1000)
+        for i,addr in enumerate(df_Addr):
             fulladdr=str(addr['ccid'].iloc[i])+","+str(addr['addr_line_one'].iloc[i])+","+str(addr['addr_line_two'].iloc[i])+","+str(addr['city'].iloc[i])+","+str(addr['postal_code'].iloc[i])+","+str(addr['country'].iloc[i])
             custAllDBAddr.append(fulladdr.split(","))
-    
-    left_on = ['AddressLineOne', 'City_Name','State','PostalCode','Country']
-    right_on = ['DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry']
-
-    reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne', 'City_Name','State','PostalCode','Country'])
-    dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry'])
-    
+   
+    if custAllDBAddr != []:
+        reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne', 'City_Name','State','PostalCode','Country'])
+        dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry'])
+   
     #print (reqAddress)
     #print (dbAddress)
-    matched_results = fuzzymatcher.fuzzy_left_join(reqAddress,
-                                                       dbAddress,
-                                                       left_on,
-                                                       right_on,
-                                                       left_id_col='Reqccid',
-                                                       right_id_col='DBccId')
-    
-    addressScore=addressScoreBoast+matched_results.best_match_score.values.item(0)*1000
-    #print(addressScore)
-    
-    if(addressScore > 0):
-        return int(addressScore)
-    else:
-        return 0;
+        matched_results = fuzzymatcher.fuzzy_left_join(reqAddress,
+                                                      dbAddress,
+                                                      left_on,
+                                                      right_on,
+                                                      left_id_col='Reqccid',
+                                                      right_id_col='DBccId')
+   
+        addressScore=addressScoreBoast+matched_results.best_match_score.values.item(0)*1000
+        
+        if(addressScore > 0) and addressScore is not None:
+            return int(addressScore)
+        else:
+            return 0;
 
 
 
-@lru_cache(maxsize=100000)
+
 def _fetchMatchRecordFromDF_(inputParam1,inputParam2):
     
     mydb = _getDBConnection_()
@@ -206,9 +208,10 @@ def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,reqaddress,input
     parseDBcustList=[]
     suspectList=[]
     #if custDbList is null search by ssn an address
-    
-    for cust in custDbList:
-        parseDBcustList.append(str(cust).split(":"))
+    if custDbList is not None:
+        for cust in custDbList:
+            parseDBcustList.append(str(cust).split(":"))
+   
 
     for custRec in parseDBcustList:
         totalscore=0
@@ -238,8 +241,11 @@ def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,reqaddress,input
         
         #Calculating Address 
         if(isAddrMatchingreq):
-            print("Going for Address Match")
-            totalscore=totalscore+_matchCustomerAddress_(reqaddress,custRec[0])
+            #print("Going for Address Match")
+            addressScore=_matchCustomerAddress_(reqaddress,custRec[0])
+            if addressScore is not None :
+                totalscore=totalscore+addressScore
+            
         
         percentileScore=totalscore/100
 
@@ -252,7 +258,7 @@ def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,reqaddress,input
                 BMatch=custRec[0]+':B~'+ str(totalscore/100)
                 suspectList.append(BMatch)
         else:
-                print(' ')
+                pass
 
 
     return suspectList
