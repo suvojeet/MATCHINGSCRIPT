@@ -22,6 +22,7 @@ import fuzzymatcher
 config = configparser.ConfigParser()
 config.read('/Users/suvojeetpal/SpringBootCloud/CustomerDataAccountHub-1/src/main/resources/perweight.ini')
 
+
 A1=config['THRESHOLD']['A1']
 B=config['THRESHOLD']['B']
 exactName=config['PERSON-WEIGHT']['CU|NAME|XACT']
@@ -30,6 +31,7 @@ phoneticName= config['PERSON-WEIGHT']['CU|NAME|PHONETIC']
 metaPhName=config['PERSON-WEIGHT']['CU|NAME|METAPHONE']
 suffixMatch=config['PERSON-WEIGHT']['CU|SUFFIX|XACT']
 suffixMisMatch=config['PERSON-WEIGHT']['CU|SUFFIX|DIFF']
+suffixMissing=config['PERSON-WEIGHT']['CU|SUFFIX|MISSING']
 exactDob=config['PERSON-WEIGHT']['CU|DOB|XACT']
 ddmmswap=config['PERSON-WEIGHT']['CU|DOB|DDMMSWP']
 dobDiff=config['PERSON-WEIGHT']['CU|DOB|DIFF']
@@ -48,21 +50,23 @@ IDSSN8DIFF=config['PERSON-WEIGHT']['ID|SSN|8EDITDST']
 iselect_query="""select concat_ws(":",CCID,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(ssn,''),IFNULL(dob,'')) AS 'MatchingList'
          FROM CUSTOMERHUB.customer WHERE bucket_hash_key between %s and %s;"""
 
-
 iselect_addr="""select ccid,Replace(addr.addr_line_one,',',' ') as addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,addr.postal_code,addr.country
          from CUSTOMERHUB.customer cust, CUSTOMERHUB.address addr where addr.cust_id=cust.cust_id and cust.ccid=%s;""";
        
        
 def _getDBConnection_():
-
-    mydb=mysql.connector.connect(user='root', password='root1234',
+    
+    try:
+        mydb=mysql.connector.connect(user='root', password='root1234',
                               host='greentechdbdev.ca3wll1ihwpn.us-east-1.rds.amazonaws.com',
                               database='CUSTOMERHUB')
+    except:
+        print('Error: getDBConnection : Unable to connect Database')
     return mydb;
 
 def _matchCustomerName_(reqCustName,dbReqName):
 
-
+    #print (reqCustName+" - Db "+dbReqName)
     soundex = fuzzy.Soundex(4)
 
     reqSndexMyName=soundex(reqCustName)
@@ -70,7 +74,7 @@ def _matchCustomerName_(reqCustName,dbReqName):
 
     dbSndexMyName=soundex(dbReqName)
     dbNysiisName=fuzzy.nysiis(dbReqName)
-
+    #Add Ignore case
     if reqCustName == dbReqName:
             namescore= exactName
     else :
@@ -80,9 +84,11 @@ def _matchCustomerName_(reqCustName,dbReqName):
             namescore=nysciisName
         else:
             namescore=0
-
+    
     return int(namescore)
 
+# change to matchcustomer ssn
+# ToDo: Generic ID match algorithm
 
 def _matchCustomerId_(reqcustId,dbcustId):
 
@@ -114,30 +120,36 @@ def _matchCustomerId_(reqcustId,dbcustId):
         return int(identScore)
 
 def _matchCustomerDateDOB_(reqDOBdate,dbDOBdate):
-
-    if reqDOBdate is not None and dbDOBdate is not None:
-        dobScore=0
+    dobScore=0
+    if  reqDOBdate is not None and dbDOBdate is not None:
+        
         dobEditDst= editdistance.eval(re.sub("[^0-9]", "", reqDOBdate),re.sub("[^0-9]", "", dbDOBdate))
-
-        if  dobEditDst == 0 :
+        if  len(reqDOBdate) > 0 and len(dbDOBdate) > 0 and dobEditDst == 0 :
             dobScore = exactDob
-        elif reqDOBdate[0:2] == dbDOBdate[2:4] and reqDOBdate[4:8] == dbDOBdate[4:8] :
+        elif reqDOBdate[0:2] == dbDOBdate[2:4] and reqDOBdate[2:4] == dbDOBdate[0:2] and reqDOBdate[4:8] == dbDOBdate[4:8] :
             dobScore = ddmmswap
-        else:
+        elif len(reqDOBdate) > 0 and len(dbDOBdate) > 0 and reqDOBdate !=dbDOBdate:
             dobScore = dobDiff
-
+        else:
+            dobScore=0
+        
         return int(dobScore)
 
 def _matchCustomerGender_(reqGender,dbGender):
-
-    if reqGender is not None and dbGender is not None:
-        genderScore=0
-        if reqGender == dbGender :
-            genderScore = exactGender
-        else:
-            genderScore = diffGender
-
-        return int(genderScore)
+    genderScore=0
+    try:
+        if reqGender is not None and dbGender is not None:
+            if reqGender == dbGender :
+                genderScore = exactGender
+            elif len(reqGender)> 0 and len(dbGender) > 0 and reqGender != dbGender:
+                genderScore = diffGender
+            else:
+                genderScore=0
+                
+    except ValueError:
+        print("Matching Engine Error : Oops!  That was no valid Gender Match.  Try again...")
+    
+    return int(genderScore)
 
 def _matchCustomerSuffix_(reqcustSuffix,dbcustSuffix):
 
@@ -145,6 +157,10 @@ def _matchCustomerSuffix_(reqcustSuffix,dbcustSuffix):
         suffixScore=0
         if reqcustSuffix == dbcustSuffix :
             suffixScore = suffixMatch
+        elif (len(reqcustSuffix) < 1 and len(dbcustSuffix) > 1) or (len(reqcustSuffix) > 1 and len(dbcustSuffix) < 1):
+            suffixScore = suffixMissing
+        elif (len(reqcustSuffix) < 1 and len(dbcustSuffix) < 1):
+            suffixScore = 0
         else:
             suffixScore = suffixMisMatch
 
@@ -152,26 +168,27 @@ def _matchCustomerSuffix_(reqcustSuffix,dbcustSuffix):
 
 
 def _matchCustomerAddress_(reqAddress,ccid):
-    
+   
     addressScore=0
     cutReqAddr=[]
     tmpccid="111111111111111"
-    left_on = ['AddressLineOne', 'City_Name','State','PostalCode','Country']
-    right_on = ['DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry']
+    left_on = ['AddressLineOne','AddressLineTwo','City_Name','PostalCode','Country']
+    right_on = ['DBAddressLineOne','DBAddressLineTwo','DBCity_Name','DBPostalCode','DBCountry']
     cutReqAddr.append((tmpccid+","+reqAddress).split(","))
     custAllDBAddr=[]
     mydb = _getDBConnection_()  
-    addressScoreBoast=20
+    addressScoreBoast=280
     #ccid=2888087888390197660
     if reqAddress is not None :
         df_Addr=pd.read_sql(iselect_addr, con=mydb ,params=(ccid,),chunksize=1000)
         for i,addr in enumerate(df_Addr):
             fulladdr=str(addr['ccid'].iloc[i])+","+str(addr['addr_line_one'].iloc[i])+","+str(addr['addr_line_two'].iloc[i])+","+str(addr['city'].iloc[i])+","+str(addr['postal_code'].iloc[i])+","+str(addr['country'].iloc[i])
+            #print(fulladdr)
             custAllDBAddr.append(fulladdr.split(","))
    
     if custAllDBAddr != []:
-        reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne', 'City_Name','State','PostalCode','Country'])
-        dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry'])
+        reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne','AddressLineTwo','City_Name','PostalCode','Country'])
+        dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne','DBAddressLineTwo','DBCity_Name','DBPostalCode','DBCountry'])
    
     #print (reqAddress)
     #print (dbAddress)
@@ -190,91 +207,99 @@ def _matchCustomerAddress_(reqAddress,ccid):
             return 0;
 
 
-
-
 def _fetchMatchRecordFromDF_(inputParam1,inputParam2):
-    
-    mydb = _getDBConnection_()
-   
-    for chunk in pd.read_sql(iselect_query, con=mydb, params=(inputParam1,inputParam2),chunksize=100000):
-        vaex_df=vx.from_pandas(df=chunk, copy_index=False)
-        return vaex_df.MatchingList.values
+    try:
+        mydb = _getDBConnection_()
+        
+        for chunk in pd.read_sql(iselect_query, con=mydb, params=(inputParam1,inputParam2),chunksize=100000):
+            vaex_df=vx.from_pandas(df=chunk, copy_index=False)
+    except:
+        print('Error: Matching Engine in _fetchMatchRecordFromDF_ function')
+        print(sys.exc_info()[0])
+    return vaex_df.MatchingList.values
+
 
 def _compareMatching_ (firstName,lastName,suffix,gender,ssn,dob,reqaddress,inputParam1,inputParam2):
-
-    custDbList=_fetchMatchRecordFromDF_(inputParam1,inputParam2)
-    totalscore=0
-    
-    parseDBcustList=[]
     suspectList=[]
-    #if custDbList is null search by ssn an address
-    if custDbList is not None:
-        for cust in custDbList:
-            parseDBcustList.append(str(cust).split(":"))
-   
+    try:
+        custDbList=_fetchMatchRecordFromDF_(inputParam1,inputParam2)
+        #print(custDbList)
+        parseDBcustList=[]
 
-    for custRec in parseDBcustList:
-        totalscore=0
-        ssnscore=0
-        totalscore= _matchCustomerName_(firstName,custRec[1])
-        totalscore=totalscore +_matchCustomerName_(lastName,custRec[2])
-        totalscore=totalscore +_matchCustomerSuffix_(suffix,custRec[3])
-        #print("Person Name")
-        #print(totalscore)
-        isAddrMatchingreq=False;
-        
-        if custRec[5] is not None:
-            ssnscore=_matchCustomerId_(ssn,custRec[5])
-            totalscore=totalscore + ssnscore
-            #print(ssnscore)
-            if int(ssnscore) == 0:
+        #if custDbList is null search by ssn an address
+        if custDbList is not None:
+            for cust in custDbList:
+                parseDBcustList.append(str(cust).split(":"))
+
+        for custRec in parseDBcustList:
+
+            ssnscore=0
+            totalscore=0
+            addressScore=0
+            #full name match need to do
+            totalscore= _matchCustomerName_(firstName,custRec[1])
+            #middle name need to match
+            totalscore=totalscore+_matchCustomerName_(lastName,custRec[2])
+            totalscore=totalscore+_matchCustomerSuffix_(suffix,custRec[3])
+
+
+            isAddrMatchingreq=False;
+
+            if ssn is not None and len(ssn) > 0 :
+                ssnscore=_matchCustomerId_(ssn,custRec[5])
+                totalscore=totalscore + ssnscore
+                if int(ssnscore) == 0:
+                    isAddrMatchingreq=True
+            else: 
                 isAddrMatchingreq=True
-        else: 
-            isAddrMatchingreq=True
-            
-        if  isAddrMatchingreq == False and int(ssnscore) < int(IDSSNExact) and int(ssnscore) >= int(IDSSN1DIFF):
-            isAddrMatchingreq=True
-        
-        totalscore=totalscore +_matchCustomerDateDOB_(dob,custRec[6])
-        totalscore=totalscore +_matchCustomerGender_(gender,custRec[4])
-        
-        
-        #Calculating Address 
-        if(isAddrMatchingreq):
-            #print("Going for Address Match")
-            addressScore=_matchCustomerAddress_(reqaddress,custRec[0])
-            if addressScore is not None :
-                totalscore=totalscore+addressScore
-            
-        
-        percentileScore=totalscore/100
 
-        if percentileScore > int(A1):
-                suspectList=[]
-                A1Match=custRec[0]+':A1~'+ str(totalscore/100)
-                suspectList.append(A1Match)
-                break;
-        elif percentileScore < int(A1) and percentileScore > int(B) :
-                BMatch=custRec[0]+':B~'+ str(totalscore/100)
-                suspectList.append(BMatch)
-        else:
-                pass
+            if  isAddrMatchingreq == False and int(ssnscore) < int(IDSSNExact) and int(ssnscore) >= int(IDSSN1DIFF):
+                isAddrMatchingreq=True
 
+            totalscore=totalscore +_matchCustomerDateDOB_(dob,custRec[6])
+            genderScore=_matchCustomerGender_(gender,custRec[4])
+            totalscore=totalscore + genderScore
+
+            #Calculating Address 
+
+            if(isAddrMatchingreq):
+                addressScore=_matchCustomerAddress_(reqaddress,custRec[0])
+
+
+            totalscore=totalscore+addressScore
+            percentileScore=totalscore/100
+
+            if percentileScore > int(A1):
+                    suspectList=[]
+                    A1Match=custRec[0]+':A1~'+ str(percentileScore)
+                    suspectList.append(A1Match)
+                    break;
+            elif percentileScore < int(A1) and percentileScore > int(B) :
+                    BMatch=custRec[0]+':B~'+ str(percentileScore)
+                    suspectList.append(BMatch)
+            else:
+                    pass
+    except:
+        print('Error: Matching Engine in _compareMatching_ function')
+        print(sys.exc_info()[0])
 
     return suspectList
+
 
 
 
 def _matchFunction_ (argv):
-   
     custDetails=argv
-    reqCustList=[]
-    reqCustList.append(custDetails.split(':'))
-    suspectList=_compareMatching_(reqCustList[0][0],reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],
-                                  reqCustList[0][6],reqCustList[0][7],reqCustList[0][8])
-
+    try:
+        reqCustList=[]
+        reqCustList.append(custDetails.split(':'))
+        suspectList=_compareMatching_(reqCustList[0][0],reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],
+                                      reqCustList[0][6],reqCustList[0][7],reqCustList[0][8])
+        #print(suspectList)
+    except:
+        print('Error: Matching Engine in _matchFunction_ function')
+        print(sys.exc_info()[0])
     return suspectList
-
 
 def main(sys):
     scriptName=sys.argv[0]
