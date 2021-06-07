@@ -22,7 +22,12 @@ import traceback
 class MatchProcessing:
 
     config = configparser.ConfigParser()
-    config.read('/Users/suvojeetpal/SpringBootCloud/CustomerDataAccountHub-1/src/main/resources/perweight.ini')
+    config.read('/Users/suvojeetpal/git/customerdatahub-git/CustomerManagement/src/main/resources/perweight.ini')
+    
+    configNickNames = configparser.ConfigParser()
+    configNickNames.read('/Users/suvojeetpal/git/customerdatahub-git/CustomerManagement/src/main/resources/perweight.ini')
+    
+    
     
     A1=config['THRESHOLD']['A1']
     B=config['THRESHOLD']['B']
@@ -47,15 +52,15 @@ class MatchProcessing:
     IDSSN7DIFF=config['PERSON-WEIGHT']['ID|SSN|7EDITDST']
     IDSSN8DIFF=config['PERSON-WEIGHT']['ID|SSN|8EDITDST']
     
-    iselect_query="""select concat_ws(":",CCID,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(ssn,''),IFNULL(dob,'')) AS 'MatchingList'
-             FROM CUSTOMERHUB.customer WHERE bucket_hash_key between %s and %s;"""
+    iselect_query="""select concat_ws(":",cui,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(REGEXP_REPLACE(cust_external_id, '[^[:alnum:]]+', ''),''),IFNULL(dob,'')) AS 'MatchingList'
+             FROM CUSTOMERHUB.Customer WHERE bucket_hash_key between %s and %s;"""
     
     
-    iselect_addr="""select ccid,Replace(addr.addr_line_one,',',' ') as addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,addr.postal_code,addr.country
-             from CUSTOMERHUB.customer cust, CUSTOMERHUB.address addr where addr.cust_id=cust.cust_id and cust.ccid=%s;""";
+    iselect_addr="""select cui,Replace(addr.addr_line_one,',',' ') as addr_line_one,IFNULL(addr.addr_line_two,'') as addr_line_two,addr.city,IFNULL(addr.state,'') as state,addr.postal_code,addr.country
+             from CUSTOMERHUB.Customer cust, CUSTOMERHUB.Address addr where addr.cust_id=cust.cust_id and cust.cui=%s;""";
 
-    iselect_ssn="""select concat_ws(":",CCID,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(ssn,''),IFNULL(dob,'')) AS 'MatchingList'
-            FROM CUSTOMERHUB.customer WHERE ssn=%s;"""  
+    iselect_ssn="""select concat_ws(":",cui,first_name,last_name,IFNULL(suffix,''),IFNULL(gender,''),IFNULL(REGEXP_REPLACE(cust_external_id, '[^[:alnum:]]+', ''),''),IFNULL(dob,'')) AS 'MatchingList'
+            FROM CUSTOMERHUB.Customer WHERE cust_external_id=%s;"""  
        
     def _getDBConnection_(self):
         from mysql.connector import pooling
@@ -167,23 +172,24 @@ class MatchProcessing:
         
         addressScore=0
         cutReqAddr=[]
+       
         tmpccid="111111111111111"
-        left_on = ['AddressLineOne', 'City_Name','State','PostalCode','Country']
-        right_on = ['DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry']
+        left_on = ['AddressLineOne', 'AddressLineTwo','City_Name','State','PostalCode','Country']
+        right_on = ['DBAddressLineOne','DBAddressLineTwo','DBCity_Name','DBState','DBPostalCode','DBCountry']
         cutReqAddr.append((tmpccid+","+reqAddress).split(","))
         custAllDBAddr=[]
         mydb = self._getDBConnection_()  
-        addressScoreBoast=20
+        addressScoreBoast=50
         #ccid=2888087888390197660
         if reqAddress is not None :
             df_Addr=pd.read_sql(self.iselect_addr, con=mydb ,params=(ccid,),chunksize=1000)
             for i,addr in enumerate(df_Addr):
-                fulladdr=str(addr['ccid'].iloc[i])+","+str(addr['addr_line_one'].iloc[i])+","+str(addr['addr_line_two'].iloc[i])+","+str(addr['city'].iloc[i])+","+str(addr['postal_code'].iloc[i])+","+str(addr['country'].iloc[i])
+                fulladdr=str(addr['cui'].iloc[i])+","+str(addr['addr_line_one'].iloc[i])+","+str(addr['addr_line_two'].iloc[i])+","+str(addr['city'].iloc[i])+","+str(addr['state'].iloc[i])+","+str(addr['postal_code'].iloc[i])+","+str(addr['country'].iloc[i])
                 custAllDBAddr.append(fulladdr.split(","))
        
         if custAllDBAddr != []:
-            reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne', 'City_Name','State','PostalCode','Country'])
-            dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne', 'DBCity_Name','DBState','DBPostalCode','DBCountry'])
+            reqAddress=pd.DataFrame(cutReqAddr,columns = ['Reqccid','AddressLineOne','AddressLineTwo','City_Name','State','PostalCode','Country'])
+            dbAddress=pd.DataFrame(custAllDBAddr,columns = ['DBccId','DBAddressLineOne','DBAddressLineTwo','DBCity_Name','DBState','DBPostalCode','DBCountry'])
        
         #print (reqAddress)
         #print (dbAddress)
@@ -259,10 +265,11 @@ class MatchProcessing:
                 
     
                 isAddrMatchingreq=False;
-    
+                
                 if ssn is not None and len(ssn) > 0 :
                     ssnscore=self._matchCustomerId_(ssn,custRec[5])
                     totalscore=totalscore + ssnscore
+                    
                     if int(ssnscore) == 0:
                         isAddrMatchingreq=True
                 else: 
@@ -270,16 +277,16 @@ class MatchProcessing:
     
                 if  isAddrMatchingreq == False and int(ssnscore) < int(self.IDSSNExact) and int(ssnscore) >= int(self.IDSSN1DIFF):
                     isAddrMatchingreq=True
-    
+                
                 totalscore=totalscore +self._matchCustomerDateDOB_(dob,custRec[6])
+                
                 genderScore=self._matchCustomerGender_(gender,custRec[4])
                 totalscore=totalscore + genderScore
-    
+                
                 #Calculating Address 
     
                 if(isAddrMatchingreq):
                     addressScore=self._matchCustomerAddress_(reqaddress,custRec[0])
-    
                 if addressScore is None:
                     addressScore=0
                     
