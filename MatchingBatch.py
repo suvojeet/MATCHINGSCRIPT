@@ -14,13 +14,14 @@ class MatchingBatch:
 
     def _matchFunction_ (self,argv):
         custDetails=sys.argv[1]
+        
         try:
             reqCustList=[]
             reqCustList.append(custDetails.split(':'))
             #print(reqCustList[0][0])
             engineInstance=MatchProcessing()
-            
-            suspectList=engineInstance._compareMatching_(reqCustList[0][0].replace("'", ""),reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],
+    
+            suspectList=engineInstance._compareMatching_(reqCustList[0][0],reqCustList[0][1],reqCustList[0][2],reqCustList[0][3],reqCustList[0][4],reqCustList[0][5],
                                           reqCustList[0][6],reqCustList[0][7],reqCustList[0][8])
             
         except Exception:
