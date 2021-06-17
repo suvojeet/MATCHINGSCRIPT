@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  match:
+    image: matchservice:latest
+    build: ./
+    command: python run.py -h 0.0.0.0
+    volumes:
+      - ./app/:/home/appuser/matchapp
+    ports:
+      - 5000:5000
+    env_file:
+      - ./.env
