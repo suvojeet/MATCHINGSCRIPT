@@ -1,0 +1,10 @@
+fuzzy==1.2.2
+editdistance
+pandas
+vaex
+fuzzymatcher==0.0.5
+mysql.connector
+flask
+flask_restful
+
+
