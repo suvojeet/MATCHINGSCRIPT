@@ -64,3 +64,7 @@ RUN chown -R appuser:matchapp $HOME
 
 # change to the app user
 USER appuser
+
+EXPOSE 5000
+
+CMD ["python3", "run.py"]
